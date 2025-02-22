@@ -1,29 +1,44 @@
-from flask import Flask, request, jsonify
-from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+from fastapi import FastAPI, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from fastapi.middleware.cors import CORSMiddleware
+# from . import models, schemas, crud, auth
+# from .database import SessionLocal, engine
+from backend import models, schemas, crud, auth
+from backend.database import SessionLocal, engine
 
-app = Flask(_name_)
+models.Base.metadata.create_all(bind=engine)
 
-# Load the T5 model and tokenizer from Hugging Face
-model_name = "t5-small"  # You can choose a larger version if needed
-model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-tokenizer = AutoTokenizer.from_pretrained(model_name)
+app = FastAPI()
 
-@app.route('/chat', methods=['POST'])
-def chat():
-    user_message = request.json.get("message", "")
-    
-    if not user_message:
-        return jsonify({"error": "No message provided"}), 400
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173/"],  # Replace with your frontend URL in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-    # Tokenize the user input and generate a response
-    input_text = f"question: {user_message} </s>"
-    input_ids = tokenizer.encode(input_text, return_tensors="pt")
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
-    # Generate a response from the model
-    output_ids = model.generate(input_ids, max_length=100, num_beams=4, early_stopping=True)
-    response_text = tokenizer.decode(output_ids[0], skip_special_tokens=True)
+@app.post("/sign-up", response_model=schemas.UserResponse)
+def sign_up(user: schemas.UserCreate, db: Session = Depends(get_db)):
+    if crud.get_user_by_username(db, user.username):
+        raise HTTPException(status_code=400, detail="Username already registered")
+    return crud.create_user(db, user)
 
-    return jsonify({"response": response_text})
+@app.post("/login")
+def login(user: schemas.UserLogin, db: Session = Depends(get_db)):
+    db_user = crud.authenticate_user(db, user.username, user.password)
+    if not db_user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    access_token = auth.create_access_token({"sub": db_user.username})
+    return {"access_token": access_token, "token_type": "bearer"}
 
-if _name_ == '_main_':
-    app.run(debug=True)
+@app.get("/dashboard")
+def get_dashboard():
+    return {"message": "Welcome to the dashboard!"}
